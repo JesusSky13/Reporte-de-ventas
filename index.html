@@ -193,14 +193,13 @@
     <div class="promo-grid" id="promoGrid"></div>
   </div>
 
-  <div class="status-bar" id="statusMsg">🔄 Sincronizando con Google Sheets...</div>
+  <div class="status-bar" id="statusMsg">🔄 Sincronizando datos...</div>
   <button class="btn-refresh" onclick="cargarDesdeGoogleSheets()">⚡ ACTUALIZAR DATOS AHORA</button>
 </div>
 
 <script>
   Chart.register(ChartDataLabels);
 
-  // ENLACE DIRECTO A TU GOOGLE SHEETS "CUADROS SALOME"
   const URL_GOOGLE_SHEETS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS_jvQqulBnFxZSj_NaZWpnNSTDkPcZSksGLFR8Lm8M7X6cSKe8hZp-jlnpAQ6KqfbI0Y7OOU7gw1WR/pub?gid=0&single=true&output=csv";
 
   const coloresNeon = ['#ff6b00', '#00d2ff', '#00ff66', '#e056fd', '#f1c40f', '#ff4757', '#70a1ff', '#2ed573', '#eccc68', '#ff7f50', '#a4b0be', '#a55eea'];
@@ -219,19 +218,42 @@
   let conteoProductos = {};
   let barChart, donutChart;
 
+  // Analizador CSV compatible con campos con comillas y comas
+  function parseCSVLine(str) {
+    const arr = [];
+    let quote = false;
+    let col = '';
+    for (let c = 0; c < str.length; c++) {
+      const cc = str[c];
+      const nc = str[c+1];
+      if (cc === '"') {
+        if (quote && nc === '"') { col += '"'; c++; }
+        else { quote = !quote; }
+      } else if (cc === ',' && !quote) {
+        arr.push(col.trim());
+        col = '';
+      } else {
+        col += cc;
+      }
+    }
+    arr.push(col.trim());
+    return arr;
+  }
+
   async function cargarDesdeGoogleSheets() {
     const status = document.getElementById('statusMsg');
     status.innerText = "🔄 Sincronizando con Google Sheets...";
 
     try {
-      const response = await fetch(URL_GOOGLE_SHEETS + "&t=" + new Date().getTime());
+      const response = await fetch(URL_GOOGLE_SHEETS + "&cachebust=" + new Date().getTime());
+      if (!response.ok) throw new Error("HTTP error " + response.status);
       const csvText = await response.text();
 
       procesarCSV(csvText);
-      status.innerText = "✅ Datos cargados automáticamente desde Google Sheets";
+      status.innerText = "✅ Datos actualizados correctamente";
     } catch (error) {
-      console.error(error);
-      status.innerText = "⚠️ Error de conexión a Google Sheets.";
+      console.error("Error al cargar:", error);
+      status.innerText = "⚠️ No se pudo obtener datos automáticamente. Revisa tu conexión.";
     }
   }
 
@@ -239,64 +261,58 @@
     asesores = [];
     conteoProductos = { 'CARDIOX': 0, 'GLYCONORM': 0, 'PAPAYA': 0, 'CALMANO': 0, 'FLEXACIL': 0, 'ALPHAMAN': 0, 'MIX': 0 };
 
-    const lineas = text.split('\n');
+    const lineas = text.split(/\r?\n/);
     let fechaDetectada = false;
 
     lineas.forEach((linea) => {
-      const columnas = linea.split(',').map(c => c.replace(/"/g, '').trim());
+      if (!linea.trim()) return;
+      const columnas = parseCSVLine(linea);
 
-      // Mapeo de celdas:
-      // Columna C (índice 0, 1 o 2 en CSV según celdas vacías a la izquierda)
-      // Escaneamos las columnas dinámicamente para detectar Asesor y Ventas
-      
-      let celdaFecha = "", nombre = "", ventas = 0, promosStr = "";
-
-      for (let i = 0; i < columnas.length; i++) {
-        if (!fechaDetectada && columnas[i].match(/\d{1,2}\/\d{1,2}\/\d{4}/)) {
-          celdaFecha = columnas[i];
-          const match = celdaFecha.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-          if (match) {
-            document.getElementById('fechaReporte').value = `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+      // Buscar la fecha en cualquier columna de la fila
+      if (!fechaDetectada) {
+        for (let i = 0; i < columnas.length; i++) {
+          const m = columnas[i].match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+          if (m) {
+            document.getElementById('fechaReporte').value = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
             fechaDetectada = true;
+            break;
           }
         }
       }
 
-      // Si la fila tiene al menos 3 columnas pobladas y la segunda es un número (Nro Ventas)
+      // Buscar par Asesor (Texto) - Nro Ventas (Número)
       for (let i = 0; i < columnas.length - 1; i++) {
-        const posibleNombre = columnas[i];
-        const posibleVentas = parseInt(columnas[i + 1]);
+        const nombreCand = columnas[i].trim();
+        const ventasCand = parseInt(columnas[i + 1]);
 
-        if (posibleNombre && !isNaN(posibleVentas) && posibleVentas > 0 && posibleNombre !== 'TOTAL DE VENTAS' && posibleNombre !== 'ASESOR') {
-          nombre = posibleNombre;
-          ventas = posibleVentas;
-          promosStr = columnas[i + 2] || '';
-          break;
-        }
-      }
+        if (nombreCand && !isNaN(ventasCand) && ventasCand > 0) {
+          const nombreUpper = nombreCand.toUpperCase();
+          if (nombreUpper !== 'TOTAL DE VENTAS' && nombreUpper !== 'NRO VENTAS' && nombreUpper !== 'FECHA' && nombreUpper !== 'ASESOR') {
+            const promosStr = columnas[i + 2] || '';
+            asesores.push({ nombre: nombreUpper, ventas: ventasCand });
 
-      if (nombre && ventas > 0) {
-        asesores.push({ nombre: nombre.toUpperCase(), ventas: ventas });
+            if (promosStr) {
+              const promosItems = promosStr.split('/');
+              promosItems.forEach(item => {
+                const pMatch = item.trim().match(/^(\d+)\s+(.+)$/);
+                if (pMatch) {
+                  const cant = parseInt(pMatch[1]);
+                  let pNombre = pMatch[2].trim().toUpperCase();
 
-        if (promosStr) {
-          const promosItems = promosStr.split('/');
-          promosItems.forEach(item => {
-            const pMatch = item.trim().match(/^(\d+)\s+(.+)$/);
-            if (pMatch) {
-              const cant = parseInt(pMatch[1]);
-              let pNombre = pMatch[2].trim().toUpperCase();
-              
-              if (pNombre === 'CALAMANO') pNombre = 'CALMANO';
-              if (pNombre === 'GLYCO') pNombre = 'GLYCONORM';
-              if (pNombre === 'FLEXA') pNombre = 'FLEXACIL';
+                  if (pNombre === 'CALAMANO') pNombre = 'CALMANO';
+                  if (pNombre === 'GLYCO') pNombre = 'GLYCONORM';
+                  if (pNombre === 'FLEXA') pNombre = 'FLEXACIL';
 
-              if (conteoProductos.hasOwnProperty(pNombre)) {
-                conteoProductos[pNombre] += cant;
-              } else {
-                conteoProductos[pNombre] = cant;
-              }
+                  if (conteoProductos.hasOwnProperty(pNombre)) {
+                    conteoProductos[pNombre] += cant;
+                  } else {
+                    conteoProductos[pNombre] = cant;
+                  }
+                }
+              });
             }
-          });
+            break;
+          }
         }
       }
     });
@@ -371,7 +387,7 @@
     });
   }
 
-  cargarDesdeGoogleSheets();
+  window.addEventListener('DOMContentLoaded', cargarDesdeGoogleSheets);
 </script>
 
 </body>
